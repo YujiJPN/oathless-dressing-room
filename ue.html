@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>UE export check</title>
+<style>html,body{margin:0;height:100%;background:#2b2f35;color:#ddd;font:12px system-ui}canvas{display:block;width:100%;height:100%}#info{position:absolute;left:8px;top:8px;white-space:pre;background:rgba(0,0,0,.4);padding:6px 8px;border-radius:4px}</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+</head><body><div id="info">loading…</div><canvas id="view"></canvas>
+<script type="module">
+// Checks the UE5 export as a glTF consumer sees it: the files' own materials and referenced textures, every piece on
+// its own copy of the canonical rig, one clip applied to all of them by bone name (what UE does with a shared Skeleton).
+//   ue.html?block=1&pieces=0,11,20,21,22,23&anim=set2/basic/A0001_idle.glb&props=00001_x.glb:I20_null
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+const q = new URLSearchParams(location.search);
+const block = q.get('block') || '1', pieces = (q.get('pieces') || '').split(',').filter(Boolean), anim = q.get('anim'), props = (q.get('props') || '').split(',').filter(Boolean);
+const UE = '/extracted/' + (q.get('src') || 'ue') + '/';   // src=ue-smooth: the smoothed copies (tools/smooth_glb.py)
+const canvas = document.getElementById('view'), info = document.getElementById('info');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true }); renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x2b2f35);
+scene.add(new THREE.HemisphereLight(0xffffff, 0xc0c0c8, 1.4)); const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(1, 2, 3); scene.add(key);
+scene.add(new THREE.GridHelper(2, 10, 0x4a4f57, 0x383c42)).position.y = -0.86;
+const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100); camera.position.set(0.4, 0.15, 4.4);
+const controls = new OrbitControls(camera, canvas); window.__ue = { camera, controls, renderer, scene, THREE };   // console / test hook
+function resize() { renderer.setSize(canvas.clientWidth, canvas.clientHeight, false); camera.aspect = canvas.clientWidth / canvas.clientHeight; camera.updateProjectionMatrix(); }
+window.addEventListener('resize', resize); resize();
+const loader = new GLTFLoader();
+const load = (url) => loader.loadAsync(url);
+const manifest = await fetch(UE + 'manifest.json').then((r) => r.json());
+const lines = [];
+const models = [];
+const base = await load(UE + `block${block}/base_body.glb`); scene.add(base.scene); models.push(base.scene);
+const hidden = new Set();
+for (const row of pieces) { const e = (manifest.pieces[block] || {})[row]; if (e && e.hides) for (const s of e.hides) hidden.add(Number(s)); }
+base.scene.traverse((o) => { if (o.isMesh) { const m = /^slot(\d+)_/.exec(o.name); if (m && hidden.has(Number(m[1]))) o.visible = false; o.frustumCulled = false; if (o.material) { o.material.side = THREE.DoubleSide; if (o.material.transparent) { o.material.depthWrite = true; o.renderOrder = 1; } } } });
+lines.push(`base body: ${base.scene.children.length} roots, hidden slots ${[...hidden].join(' ') || 'none'}`);
+for (const row of pieces) {
+  const e = (manifest.pieces[block] || {})[row];
+  if (!e || !e.file) { lines.push(`row ${row}: not in the manifest`); continue; }
+  try { const g = await load(UE + e.file); g.scene.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; if (o.material) { o.material.side = THREE.DoubleSide; if (o.material.transparent) { o.material.depthWrite = true; o.renderOrder = 1; } } } }); scene.add(g.scene); models.push(g.scene); lines.push(`row ${row}: ${e.file} (${e.kind}, slot ${e.slot})`); }
+  catch (err) { lines.push(`row ${row}: FAILED ${err.message}`); }
+}
+for (const p of props) {
+  const [file, bone] = p.split(':');
+  try { const g = await load(UE + 'props/' + file); const b = bone ? base.scene.getObjectByName(bone) : null; (b || scene).add(g.scene); lines.push(`prop ${file} on ${bone || 'scene'}${b ? '' : ' (bone not found)'}`); } catch (err) { lines.push(`prop ${file}: FAILED ${err.message}`); }
+}
+const mixers = [];
+if (anim) {
+  try {
+    const g = await load(UE + 'anims/' + anim); const clip = g.animations[0];
+    for (const m of models) { const mixer = new THREE.AnimationMixer(m); mixer.clipAction(clip).play(); mixers.push(mixer); }
+    lines.push(`clip ${clip.name}: ${clip.duration.toFixed(2)} s, ${clip.tracks.length} tracks, applied to ${models.length} models by bone name`);
+  } catch (err) { lines.push(`anim: FAILED ${err.message}`); }
+}
+let textures = 0, failed = 0; scene.traverse((o) => { if (o.isMesh && o.material) { if (o.material.map) textures++; else failed++; } });
+lines.push(`meshes with a texture ${textures}, without ${failed}`);
+info.textContent = lines.join('\n'); window.__ueReady = true;
+const clock = new THREE.Clock();
+(function frame() { requestAnimationFrame(frame); const dt = clock.getDelta(); for (const m of mixers) m.update(dt); controls.update(); renderer.render(scene, camera); })();
+</script></body></html>

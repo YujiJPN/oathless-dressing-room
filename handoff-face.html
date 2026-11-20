@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>face sheet</title>
+<style>html,body{margin:0;background:#2b2d33;color:#ddd;font:15px system-ui;overflow:hidden}
+.lbl{position:absolute;white-space:nowrap;text-shadow:0 1px 2px #000}
+#t{position:absolute;left:8px;top:6px;font-size:17px;color:#fff}</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+</head><body><div id="t"></div>
+<script type="module">
+// Face sheet of the hand-off pack: /viewer/handoff-face.html?body=NewterF
+// columns = the 5 creation faces; rows = front, three-quarter, side (face piece + the base body's eyes, no hair),
+// front with hair 1, blink (morph blink_frame2), expression (morph expression_frame6, where the face has one).
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const q = new URLSearchParams(location.search);
+const body = q.get('body') || 'NewterF';
+const base = `/handoff/playable-characters/${body}/`;
+const ROWS = ['front', 'three-quarter', 'side', 'front, with hair 1', 'blink (clip frame 2)', 'expression (clip frame 6)'];
+const loader = new GLTFLoader();
+import { clone as skClone } from 'three/addons/utils/SkeletonUtils.js';
+const cache = new Map();
+const loadOnce = (u) => { if (!cache.has(u)) cache.set(u, new Promise((ok) => loader.load(u, (g) => ok(g.scene), undefined, () => ok(null)))); return cache.get(u); };
+const load = async (u) => { const s = await loadOnce(u); return s ? skClone(s) : null; };
+const rows = [0, 1, 2, 3, 4].map((i) => `faces/face${i + 1}_r000${i}.glb`);
+// cell size from the biggest face
+const probe = await load(base + rows[0]);
+const pb = new THREE.Box3().setFromObject(probe); const ps = pb.getSize(new THREE.Vector3());
+const CELL = Math.max(ps.x, ps.y, ps.z) * 1.75, PXM = 330 / CELL, TOP = 40, LEFT = 150;
+const W = Math.round(LEFT + 5 * CELL * PXM), H = Math.round(TOP + ROWS.length * CELL * PXM);
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.outputColorSpace = THREE.SRGBColorSpace; document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x2b2d33);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9a9a9a, 2.4));
+const cam = new THREE.OrthographicCamera(-LEFT / PXM, 5 * CELL, TOP / PXM + ROWS.length * CELL, 0, -50, 50); cam.position.set(0, 0, 10); cam.lookAt(0, 0, 0);
+cam.top = ROWS.length * CELL + TOP / PXM; cam.updateProjectionMatrix();
+document.getElementById('t').textContent = `${body}: the five creation faces (bind pose, cell ${Math.round(CELL * 100)} cm)`;
+ROWS.forEach((n, r) => { const d = document.createElement('div'); d.className = 'lbl'; d.textContent = n; d.style.left = '8px'; d.style.top = (TOP + (r + 0.5) * CELL * PXM) + 'px'; document.body.appendChild(d); });
+const prep = (s, file) => s.traverse((o) => {
+  if (!o.isMesh) return;
+  const m = /^slot(\d+)_/.exec(o.material.name || '');
+  if (file === 'base_body.glb') { o.visible = !!m && +m[1] === 90; o.renderOrder = 1; o.frustumCulled = false; return; }
+  const face = file.startsWith('faces/');
+  o.material.transparent = face; o.material.alphaTest = face ? 0 : 0.5; o.material.depthWrite = !face; o.renderOrder = face ? 2 : 0; o.frustumCulled = false;
+});
+await Promise.all([0, 1, 2, 3, 4].map(async (c) => {
+  let names = null;
+  await Promise.all(ROWS.map(async (_, r) => {
+    const grp = new THREE.Group();
+    const files = ['base_body.glb', rows[c]]; if (r === 3) files.push('hairs/hair1_r0008.glb');
+    let centre = null, skip = false;
+    for (const f of files) {
+      const s = await load(base + f); if (!s) continue; prep(s, f); grp.add(s);
+      if (f.startsWith('faces/')) {
+        centre = new THREE.Box3().setFromObject(s).getCenter(new THREE.Vector3());
+        s.traverse((o) => {
+          if (!o.isMesh) return;
+          names = o.morphTargetDictionary || {};
+          const want = r === 4 ? 'blink_frame2' : r === 5 ? 'expression_frame6' : null;
+          if (want) { if (want in names) o.morphTargetInfluences[names[want]] = 1; else skip = true; }
+        });
+      }
+    }
+    if (skip || !centre) return;
+    const pivot = new THREE.Group(); grp.position.copy(centre).negate(); pivot.add(grp);
+    pivot.rotation.y = r === 1 ? -Math.PI / 4 : r === 2 ? -Math.PI / 2 : 0;
+    pivot.position.set((c + 0.5) * CELL, (ROWS.length - r - 0.5) * CELL, 0);
+    scene.add(pivot);
+  }));
+  const d = document.createElement('div'); d.className = 'lbl'; d.textContent = `face ${c + 1}` + (names ? `  (${Object.keys(names).length} morphs)` : '');
+  d.style.left = (LEFT + (c + 0.3) * CELL * PXM) + 'px'; d.style.top = (TOP - 8) + 'px'; document.body.appendChild(d);
+}));
+renderer.render(scene, cam);
+document.title = 'ready ' + W + 'x' + H;
+</script></body></html>

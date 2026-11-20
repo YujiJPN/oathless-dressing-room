@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>head</title>
+<style>html,body{margin:0;background:#cdcdcd;overflow:hidden}</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+// One head of the hand-off pack as the game draws it, for reference pictures:
+//   /viewer/handoff-head.html?body=NewterM&view=front|left|back|threequarter&hair=603C24&mask=a/37125_mecpayhu_0.png&size=1024
+//   &face=remake/NewterM/face/NewterM_face_r1.glb : a remade face (a path under /handoff/) in place of the game's face 1, drawn solid
+//   &nohair=1 : without the hair piece (which also carries the scalp and the ears)
+//   &skinoff=1 : the hair piece without its skin parts (ears, scalp), for a remade head that has its own; needs &mask=
+//   &hairremake=remake/NewterM/hair/NewterM_hair1_r1.glb : a remade hair piece (a path under /handoff/), drawn with its own pictures
+//   &bodyremake=remake/NewterM/body/NewterM_body_r1.glb : remade body pieces (a path under /handoff/) in place of the game's base body
+//   &span=1.95 : how much the picture shows, metres (default 0.42: a head; with it the picture is centred exactly on &centre)
+//   &pose=blink:1,jaw_open:0.6 : poses of a remade head (its morph targets), each 0..1
+//   &centre=x,y,z : the point the picture is centred on (metres, the pack's axes) instead of the middle of face + hair
+// face 1 + hair 1 on the base body (its eyes, neck and shoulders), orthographic, the same scale in every view
+// (span = 42 cm, centred on the head). The hair is tinted the way the client does it: texture x (1 - mask x (1 - colour)).
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const q = new URLSearchParams(location.search);
+const body = q.get('body') || 'NewterM', view = q.get('view') || 'front', size = +(q.get('size') || 1024);
+const tint = new THREE.Color('#' + (q.get('hair') || '603C24'));
+const base = `/handoff/playable-characters/${body}/`;
+const remake = q.get('face') ? '/handoff/' + q.get('face') : null;
+const hairRemake = q.get('hairremake') ? '/handoff/' + q.get('hairremake') : null;
+const bodyRemake = q.get('bodyremake') ? '/handoff/' + q.get('bodyremake') : null;
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(size, size); renderer.outputColorSpace = THREE.SRGBColorSpace; document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xcdcdcd);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9a9a9a, 2.3));
+const dl = new THREE.DirectionalLight(0xffffff, 0.5); dl.position.set(0.4, 1, 2); scene.add(dl);
+const loader = new GLTFLoader();
+const load = (u) => new Promise((ok) => loader.load(u, (g) => ok(g.scene), undefined, () => ok(null)));
+const image = (u) => new Promise((ok) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ok(null); i.src = u; });
+const grp = new THREE.Group();
+const head = [];
+for (const f of ['base_body.glb', 'faces/face1_r0000.glb', q.get('hairpiece') || 'hairs/hair1_r0008.glb']) {      // &hairpiece=hairs/hair9_r0016.glb : another hair piece (9 is the bare head)
+  const s = await load(f.startsWith('faces/') && remake ? remake : f.startsWith('hairs/') && hairRemake ? hairRemake : f === 'base_body.glb' && bodyRemake ? bodyRemake : base + f); if (!s) continue;
+  const meshes = []; s.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  for (const o of meshes) {
+    const m = /^slot(\d+)_/.exec(o.material.name || '');
+    o.frustumCulled = false;
+    if (f === 'base_body.glb') {
+      if (m && ([1, 7].includes(+m[1]) || (remake && +m[1] === 90))) { o.visible = false; continue; }      // the chosen face and hair replace them (a remade head has its own eyes)
+      o.material.transparent = false; o.material.alphaTest = 0.5; o.renderOrder = m && +m[1] === 90 ? 1 : 0;
+    } else if (f.startsWith('faces/')) {
+      if (remake) {
+        o.material.transparent = false; o.material.side = THREE.DoubleSide;
+        for (const kv of (q.get('pose') || '').split(',')) { const [k, v] = kv.split(':'); const i = o.morphTargetDictionary ? o.morphTargetDictionary[k] : undefined; if (i !== undefined) o.morphTargetInfluences[i] = +v; }
+      }
+      else { o.material.transparent = true; o.material.alphaTest = 0; o.material.depthWrite = false; o.renderOrder = 2; }
+      head.push(o);
+    } else if (hairRemake) {
+      o.material.transparent = false; o.material.alphaTest = 0.5; o.material.side = THREE.DoubleSide; o.userData.hairPiece = true; head.push(o);
+    } else {
+      o.material.transparent = false; o.material.alphaTest = 0.5; o.userData.hairPiece = true; head.push(o);
+      const mask = q.get('mask') ? await image('/extracted/sheets/' + q.get('mask')) : null;
+      const src = o.material.map.image, c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
+      const x = c.getContext('2d'); x.drawImage(src, 0, 0); const d = x.getImageData(0, 0, c.width, c.height);
+      let md = null;
+      if (mask) { const mc = document.createElement('canvas'); mc.width = c.width; mc.height = c.height; const mx = mc.getContext('2d'); mx.drawImage(mask, 0, 0, c.width, c.height); md = mx.getImageData(0, 0, c.width, c.height).data; }
+      const t = [tint.r, tint.g, tint.b].map((v) => Math.pow(v, 1 / 2.2));          // the client tints in display space
+      for (let i = 0; i < d.data.length; i += 4) { const k = md ? md[i] / 255 : 1; for (let ch = 0; ch < 3; ch++) d.data[i + ch] *= 1 - k * (1 - t[ch]); if (md && q.get('skinoff') && k < 0.35) d.data[i + 3] = 0; }
+      x.putImageData(d, 0, 0);
+      const tex = new THREE.CanvasTexture(c); tex.flipY = false; tex.colorSpace = THREE.SRGBColorSpace; o.material.map = tex; o.material.needsUpdate = true;
+    }
+  }
+  grp.add(s);
+}
+scene.add(grp); grp.updateMatrixWorld(true);
+const box = new THREE.Box3(); head.forEach((o) => box.expandByObject(o));
+const c = box.getCenter(new THREE.Vector3());
+if (q.get('centre')) c.fromArray(q.get('centre').split(',').map(Number));
+if (q.get('nohair')) head.forEach((o) => { if (!/^slot1_|^r0$/.test(o.material.name || '') && o.userData.hairPiece) o.visible = false; });
+const pivot = new THREE.Group(); scene.remove(grp); grp.position.copy(c).negate(); pivot.add(grp); scene.add(pivot);
+pivot.rotation.y = { front: 0, left: -Math.PI / 2, back: Math.PI, threequarter: -Math.PI / 5 }[view] ?? 0;
+const span = +(q.get('span') || 0.42), drop = q.get('span') ? 0 : 0.02;
+const cam = new THREE.OrthographicCamera(-span / 2, span / 2, span / 2 - drop, -span / 2 - drop, -5, 5); cam.position.set(0, 0, 2); cam.lookAt(0, 0, 0);
+renderer.render(scene, cam);
+if (q.get('save')) {            // &save=NewterM/reference/newterM_front.png : the picture is written by the viewer's server
+  const r = await fetch('/api/save-image', { method: 'POST', body: JSON.stringify({ path: q.get('save'), dataUrl: renderer.domElement.toDataURL('image/png') }) });
+  window.__saved = r.status;
+}
+window.__s = { scene, cam, renderer, pivot, grp, THREE };
+window.__dbg = { heads: head.length, min: box.min.toArray(), max: box.max.toArray(), children: grp.children.length };
+document.title = 'ready';
+</script></body></html>

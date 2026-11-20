@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>character sheet</title>
+<style>html,body{margin:0;background:#2b2d33;color:#ddd;font:15px system-ui;overflow:hidden}
+.lbl{position:absolute;transform:translateX(-50%);text-align:center;white-space:nowrap;text-shadow:0 1px 2px #000}
+.ruler{position:absolute;left:4px;font-size:12px;color:#8a8f99}
+#t{position:absolute;left:8px;top:6px;font-size:16px;color:#fff}</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+</head><body><div id="t"></div>
+<script type="module">
+// Model sheet of the hand-off pack (tools/export_character_handoff.py): loads the self-contained files under
+// /handoff/playable-characters/, males top row, females bottom, in the rig's bind pose, feet on the ground line.
+//   /viewer/handoff.html?view=front|side|back&dress=1   (dress=0: the bare base body with its own face and hair)
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const q = new URLSearchParams(location.search);
+const view = q.get('view') || 'front', dress = q.get('dress') !== '0';
+const PX = 200, COLW = 2.6, ROWH = 2.75;   // pixels per metre, column width, row height (m)
+const W = Math.round(4 * COLW * PX), H = Math.round(2 * ROWH * PX);
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.outputColorSpace = THREE.SRGBColorSpace; document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x2b2d33);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 2.2));
+const dl = new THREE.DirectionalLight(0xffffff, 0.6); dl.position.set(0.5, 1, 2); scene.add(dl);
+const cam = new THREE.OrthographicCamera(0, 4 * COLW, 2 * ROWH, 0, -50, 50); cam.position.set(0, 0, 10); cam.lookAt(0, 0, 0);
+document.getElementById('t').textContent = `Oathless playable bodies — ${view} view, ${dress ? 'face 1 + default hair + starter clothes' : 'bare base body'} — bind pose, grid 50 cm`;
+// height grid per row
+const gm = new THREE.LineBasicMaterial({ color: 0x4a4f59 });
+for (let r = 0; r < 2; r++) for (let h = 0; h <= 2.5; h += 0.5) {
+  const y = (1 - r) * ROWH + 0.1 + h;
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, y, -20), new THREE.Vector3(4 * COLW, y, -20)]), gm));
+  const d = document.createElement('div'); d.className = 'ruler'; d.textContent = (h * 100) + ' cm'; d.style.top = (H - y * PX - 14) + 'px'; document.body.appendChild(d);
+}
+const races = ['Newter', 'Cognite', 'Pandemos', 'Elmony'];
+const DEF_HAIR = { NewterF: 'hair4_r0011' };
+const loader = new GLTFLoader();
+const load = (u) => new Promise((ok) => loader.load(u, (g) => ok(g.scene), undefined, () => ok(null)));
+const jobs = [];
+races.forEach((race, c) => ['M', 'F'].forEach((sx, r) => jobs.push((async () => {
+  const key = race + sx, base = `/handoff/playable-characters/${key}/`;
+  const files = ['base_body.glb'];
+  if (dress) files.push('faces/face1_r0000.glb', `hairs/${DEF_HAIR[key] || 'hair1_r0008'}.glb`, 'starter_clothes/chest_r0020.glb', 'starter_clothes/hands_r0021.glb', 'starter_clothes/legs_r0022.glb', 'starter_clothes/feet_r0023.glb');
+  const hide = dress ? [0, 1, 95, 7, 2, 6, 3, 8] : [];
+  const grp = new THREE.Group();
+  for (const f of files) {
+    const s = await load(base + f); if (!s) { console.warn('missing', base + f); continue; }
+    s.traverse((o) => {
+      if (!o.isMesh) return;
+      const mn = (o.material.name || '');
+      const m = /^slot(\d+)_/.exec(mn);
+      if (f === 'base_body.glb' && m && hide.includes(+m[1])) { o.visible = false; return; }
+      const face = f.startsWith('faces/') || (f === 'base_body.glb' && m && +m[1] === 1);
+      o.material.transparent = face; o.material.alphaTest = face ? 0 : 0.5; o.material.depthWrite = !face;
+      o.renderOrder = face ? 2 : (m && +m[1] === 90 ? 1 : 0); o.frustumCulled = false;
+    });
+    grp.add(s);
+  }
+  grp.rotation.y = view === 'side' ? Math.PI / 2 : view === 'back' ? Math.PI : 0;
+  scene.add(grp); grp.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(grp);
+  grp.position.set((c + 0.5) * COLW - (box.min.x + box.max.x) / 2, (1 - r) * ROWH + 0.1 - box.min.y, 0);
+  const hcm = Math.round((box.max.y - box.min.y) * 100);
+  const d = document.createElement('div'); d.className = 'lbl';
+  d.textContent = `${race} ${sx === 'M' ? 'male' : 'female'} · ${hcm} cm`;
+  d.style.left = ((c + 0.5) * COLW * PX) + 'px'; d.style.top = (H - ((1 - r) * ROWH + 0.1) * PX + 2) + 'px'; document.body.appendChild(d);
+})())));
+await Promise.all(jobs);
+renderer.render(scene, cam);
+document.title = 'ready';
+</script></body></html>

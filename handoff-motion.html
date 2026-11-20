@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>motion</title>
+<style>html,body{margin:0;background:#cdcdcd;overflow:hidden}</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+// One body of the hand-off pack in one of its motions, the game's own pieces or the remade ones, to test a remake moving:
+//   /viewer/handoff-motion.html?body=NewterM&set=game|remake&motion=A0006_run_forward&size=512&span=2.1
+// set=game:   base body + face 1 + hair 1 (tinted &hair=603C24 with &mask=a/37125_mecpayhu_0.png), as handoff-head.html draws them
+// set=remake: handoff/remake/<body>/body/<body>_body_r1.glb, head/<body>_head_r1.glb, hair/<body>_hair1_r1.glb
+// Every piece carries the same rig; the motion (anims_core/<motion>.glb) is played on each piece's own copy of it.
+// window.__m: { duration, pose(t, view), save(path), seams(), expression({...}) } for scripted pictures and checks.
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const q = new URLSearchParams(location.search);
+const body = q.get('body') || 'NewterM', set = q.get('set') || 'game', size = +(q.get('size') || 512), span = +(q.get('span') || 2.1);
+const bust = '?v=' + (q.get('v') || Date.now());
+const base = `/handoff/playable-characters/${body}/`, rem = `/handoff/remake/${body}/`;
+const tint = new THREE.Color('#' + (q.get('hair') || '603C24'));
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(size, size); renderer.outputColorSpace = THREE.SRGBColorSpace; document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xcdcdcd);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9a9a9a, 2.3));
+const dl = new THREE.DirectionalLight(0xffffff, 0.5); dl.position.set(0.4, 1, 2); scene.add(dl);
+const loader = new GLTFLoader();
+const load = (u) => new Promise((ok) => loader.load(u, (g) => ok(g), undefined, () => ok(null)));
+const image = (u) => new Promise((ok) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ok(null); i.src = u; });
+const files = set === 'remake'
+  ? [['body', rem + `body/${body}_body_r1.glb` + bust], ['head', rem + `head/${body}_head_r1.glb` + bust], ['hair', rem + `hair/${body}_hair1_r1.glb` + bust]]
+  : [['body', base + 'base_body.glb'], ['head', base + 'faces/face1_r0000.glb'], ['hair', base + 'hairs/hair1_r0008.glb']];
+const pivot = new THREE.Group(); scene.add(pivot);
+const roots = [], skinned = [];
+for (const [kind, url] of files) {
+  const g = await load(url); if (!g) { console.error('missing', url); continue; }
+  const meshes = []; g.scene.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  for (const o of meshes) {
+    const m = /^slot(\d+)_/.exec(o.material.name || '');
+    o.frustumCulled = false; o.userData.kind = kind; o.material.side = THREE.DoubleSide;
+    if (!o.isSkinnedMesh) { o.visible = false; continue; }            // the rig's bone markers
+    if (set === 'game' && kind === 'body') {
+      if (m && [1, 7].includes(+m[1])) { o.visible = false; continue; }
+      o.material.transparent = false; o.material.alphaTest = 0.5; o.renderOrder = m && +m[1] === 90 ? 1 : 0;
+    } else if (set === 'game' && kind === 'head') {
+      o.material.transparent = true; o.material.alphaTest = 0; o.material.depthWrite = false; o.renderOrder = 2;
+    } else if (set === 'game' && kind === 'hair') {
+      o.material.transparent = false; o.material.alphaTest = 0.5;
+      const mask = q.get('mask') !== '' ? await image('/extracted/sheets/' + (q.get('mask') || 'a/37125_mecpayhu_0.png')) : null;
+      const src = o.material.map.image, c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
+      const x = c.getContext('2d'); x.drawImage(src, 0, 0); const d = x.getImageData(0, 0, c.width, c.height);
+      let md = null;
+      if (mask) { const mc = document.createElement('canvas'); mc.width = c.width; mc.height = c.height; const mx = mc.getContext('2d'); mx.drawImage(mask, 0, 0, c.width, c.height); md = mx.getImageData(0, 0, c.width, c.height).data; }
+      const t = [tint.r, tint.g, tint.b].map((v) => Math.pow(v, 1 / 2.2));
+      for (let i = 0; i < d.data.length; i += 4) { const k = md ? md[i] / 255 : 1; for (let ch = 0; ch < 3; ch++) d.data[i + ch] *= 1 - k * (1 - t[ch]); }
+      x.putImageData(d, 0, 0);
+      const tex = new THREE.CanvasTexture(c); tex.flipY = false; tex.colorSpace = THREE.SRGBColorSpace; o.material.map = tex; o.material.needsUpdate = true;
+    } else {
+      o.material.transparent = false; if (kind === 'hair') o.material.alphaTest = 0.5;
+    }
+    skinned.push(o);
+  }
+  pivot.add(g.scene); roots.push(g.scene);
+}
+const anim = await load(base + 'anims_core/' + (q.get('motion') || 'A0001_idle') + '.glb');
+const clip = anim && anim.animations[0];
+const mixers = roots.map((r) => { const m = new THREE.AnimationMixer(r); if (clip) m.clipAction(clip).play(); return m; });
+const cam = new THREE.OrthographicCamera(-span / 2, span / 2, span / 2, -span / 2, -10, 10); cam.position.set(0, 0, 3); cam.lookAt(0, 0, 0);
+pivot.position.set(0, -(+(q.get('cy') || 0.03)), 0);
+const yaw = { front: 0, left: -Math.PI / 2, back: Math.PI, threequarter: -Math.PI / 5 };
+// rest places shared by two pieces: the seams (waist, wrists, ankles, neck)
+scene.updateMatrixWorld(true);
+const v = new THREE.Vector3(), seamsAt = new Map();
+for (const o of skinned) {
+  if (!o.visible || o.userData.kind === 'hair') continue;
+  const pos = o.geometry.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+    const key = [v.x, v.y, v.z].map((a) => Math.round(a / 5e-5)).join(',');
+    if (!seamsAt.has(key)) seamsAt.set(key, []);
+    const list = seamsAt.get(key); if (!list.some((e) => e[0] === o)) list.push([o, i, v.clone()]);
+  }
+}
+const seams = [...seamsAt.values()].filter((l) => l.length > 1);
+window.__m = {
+  duration: clip ? clip.duration : 0, pieces: skinned.filter((o) => o.visible).length, seamPoints: seams.length,
+  async motion(name) {            // another motion on the same pieces
+    const a = await load(base + 'anims_core/' + name + '.glb'); if (!a || !a.animations[0]) return 0;
+    for (const m of mixers) { m.stopAllAction(); m.clipAction(a.animations[0]).play(); }
+    return (this.duration = a.animations[0].duration);
+  },
+  pose(t, view) { for (const m of mixers) m.setTime(t); pivot.rotation.y = yaw[view] ?? 0; scene.updateMatrixWorld(true); renderer.render(scene, cam); },
+  expression(mix) { for (const o of skinned) if (o.morphTargetDictionary) { o.morphTargetInfluences.fill(0); for (const k in mix) { const i = o.morphTargetDictionary[k]; if (i !== undefined) o.morphTargetInfluences[i] = mix[k]; } } },
+  seams() {            // how far apart the pieces' shared points are in the pose shown, mm (largest, mean), and how far the pose has carried them from rest at most
+    const a = new THREE.Vector3(), b = new THREE.Vector3(); let worst = 0, sum = 0, carried = 0;
+    for (const l of seams) { l[0][0].getVertexPosition(l[0][1], a).applyMatrix4(l[0][0].matrixWorld); carried = Math.max(carried, a.distanceTo(l[0][2]));
+      let d = 0; for (let k = 1; k < l.length; k++) { l[k][0].getVertexPosition(l[k][1], b).applyMatrix4(l[k][0].matrixWorld); d = Math.max(d, a.distanceTo(b)); }
+      worst = Math.max(worst, d); sum += d; }
+    return [worst * 1000, sum / Math.max(seams.length, 1) * 1000, carried * 1000];
+  },
+  async save(path) { const r = await fetch('/api/save-image', { method: 'POST', body: JSON.stringify({ path, dataUrl: renderer.domElement.toDataURL('image/png') }) }); return r.status; },
+};
+window.__m.pose(0, q.get('view') || 'threequarter');
+document.title = 'ready';
+</script></body></html>

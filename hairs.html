@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>MoE hair chart</title>
+<style>
+html,body{margin:0;background:#2b2d33;color:#ddd;font:13px system-ui}
+#bar{padding:8px 12px;display:flex;gap:12px;align-items:center;background:#1f2126}
+#grid{display:grid;grid-template-columns:repeat(5,220px);gap:8px;padding:12px}
+.cell{background:#1f2126;border-radius:4px;padding:4px;text-align:center}
+.cell canvas{display:block;width:212px;height:212px;background:#3a3d44}
+.cell b{display:block;margin:2px 0}
+</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+</head><body>
+<div id="bar">
+  <label>race <select id="race"></select></label>
+  <label>hair colour <input id="tint" type="color" value="#b0202a"></label>
+  <label>face <select id="face"></select></label>
+  <span id="status"></span>
+</div>
+<div id="grid"></div>
+<script type="module">
+// Every hair row of a race block (rows 8..17 = creation hair ids 0..9, FUN_00622470 / DAT_0094ccf0) on the chosen face,
+// front and back, like the wiki charts. Row 0..7 = face ids 0..7 (the game offers the first five).
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const $ = (id) => document.getElementById(id);
+const [appearance, racesFile] = await Promise.all(['appearance', 'races'].map((n) => fetch(`data/${n}.json`).then((r) => r.json())));
+const races = racesFile.races;
+const q = new URLSearchParams(location.search);
+$('race').innerHTML = Object.entries(races).map(([b, r]) => `<option value="${b}">${r.label}</option>`).join('');
+$('race').value = q.get('block') || '1';
+$('face').innerHTML = [0, 1, 2, 3, 4].map((i) => `<option value="${i}">face ${i + 1}</option>`).join('');
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(424, 424); renderer.outputColorSpace = THREE.SRGBColorSpace;
+const loader = new GLTFLoader(); const texLoader = new THREE.TextureLoader();
+const cache = new Map();
+const load = (url) => { if (!cache.has(url)) cache.set(url, fetch(url).then((r) => r.arrayBuffer()).then((b) => loader.parseAsync(b, ''))); return cache.get(url); };
+const tex = (rel) => texLoader.loadAsync('/extracted/sheets/' + rel).then((t) => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = false; return t; });
+function skinnedOf(scene) { let m = null; scene.traverse((o) => { if (!m && o.isSkinnedMesh) m = o; }); return m; }
+// faces are alpha-blended over the eye fans: the sheet's alpha is ~0.06 inside the eye almond (the iris shows through)
+// and 1 elsewhere (skin and lashes stay on top)
+async function piece(e, tint, face = false) {
+  const g = await load('/extracted/models/' + e.g); const t = e.t ? await tex(e.t).catch(() => null) : null;
+  const mesh = skinnedOf(g.scene); if (!mesh) return null;
+  mesh.material = face ? new THREE.MeshStandardMaterial({ map: t, roughness: 0.9, metalness: 0, side: THREE.DoubleSide, transparent: true, alphaTest: 0, depthWrite: true })
+    : new THREE.MeshStandardMaterial({ map: t, color: tint || 0xffffff, roughness: 0.9, metalness: 0, side: THREE.DoubleSide, alphaTest: 0.5 });
+  if (face) mesh.renderOrder = 1;
+  mesh.frustumCulled = false; mesh.skeleton.pose();
+  return g.scene;
+}
+// the eyes: the race base body's slot-90 mesh (two fans in front of the face) with the sheet's 64x64 iris surface;
+// plus the base body's own hair (slot 7) when the hair row's model sits in another slot (row 15's back panel is slot 17)
+async function eyes(base, keepBaseHair, tint) {
+  if (!base) return null;
+  const g = await load('/extracted/models/' + base.g);
+  const iris = base.s[String(base.slots['90'])]; const t = iris ? await tex(iris).catch(() => null) : null;
+  const hairPng = base.s[String(base.slots['7'])]; const th = keepBaseHair && hairPng ? await tex(hairPng).catch(() => null) : null;
+  g.scene.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    if (/^slot7_/.test(o.name) && keepBaseHair) { o.material = new THREE.MeshStandardMaterial({ map: th, color: tint || 0xffffff, roughness: 0.9, metalness: 0, side: THREE.DoubleSide, alphaTest: 0.5 }); o.frustumCulled = false; o.skeleton.pose(); return; }
+    if (!/^slot90_/.test(o.name)) { o.visible = false; return; }
+    o.material = new THREE.MeshStandardMaterial({ map: t, roughness: 0.5, metalness: 0, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+    o.frustumCulled = false; o.skeleton.pose();
+  });
+  return g.scene;
+}
+async function build() {
+  const b = $('race').value; const app = appearance[b] || {}; const grid = $('grid'); grid.innerHTML = '';
+  $('status').textContent = 'rendering…';
+  const faceRow = Number($('face').value); const tint = new THREE.Color($('tint').value);
+  // rows 8..17 = the character record's hair number 1..10 (row = 7 + number) = the wiki's Hair 1..8, ボサ, and an extra
+  // tenth (owner-confirmed for Newter female)
+  const NAME = { 16: 'ボサ (hair 9)', 17: 'extra (hair 10)' };
+  for (const row of [8, 9, 10, 11, 12, 13, 14, 15, 16, 17]) {
+    const e = app[String(row)];
+    const cell = document.createElement('div'); cell.className = 'cell';
+    cell.innerHTML = `<b>${NAME[row] || 'Hair ' + (row - 7)} · row ${row}${e && e.c !== 7 ? ' (slot ' + e.c + ', not a hair row)' : ''}</b>`;
+    const c = document.createElement('canvas'); c.width = 424; c.height = 424; cell.appendChild(c); grid.appendChild(cell);
+    if (!e) { cell.innerHTML += '<i>no row</i>'; continue; }
+    const scene = new THREE.Scene(); scene.background = new THREE.Color(0x3a3d44);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.2)); const dl = new THREE.DirectionalLight(0xffffff, 1.2); dl.position.set(1, 2, 3); scene.add(dl);
+    const f = app[String(faceRow)]; if (f) { const fs = await piece(f, null, true); if (fs) scene.add(fs); }
+    const es = await eyes(races[b].base, e.m != null && e.m !== 7, tint).catch(() => null); if (es) scene.add(es);
+    const hs = await piece(e, tint); if (hs) scene.add(hs);
+    const ctx = c.getContext('2d');
+    for (const [k, dir] of [[0, 1], [1, -1]]) {
+      const cam = new THREE.PerspectiveCamera(30, 1, 0.01, 10); cam.position.set(0, 0.72, 0.6 * dir); cam.lookAt(0, 0.72, 0);
+      renderer.render(scene, cam);
+      ctx.drawImage(renderer.domElement, k * 212, 0, 212, 424, k * 212, 0, 212, 424);
+    }
+    ctx.fillStyle = '#fff'; ctx.font = '16px system-ui'; ctx.fillText('front', 8, 20); ctx.fillText('back', 220, 20);
+  }
+  $('status').textContent = `${races[b].label}: rows 8–17 on face row ${faceRow}`;
+}
+$('race').addEventListener('change', build); $('tint').addEventListener('input', build); $('face').addEventListener('change', build);
+build();
+</script></body></html>

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MoE minimap overlay</title>
+<style>body { margin: 0; background: #15181d; color: #ccc; font: 13px system-ui; } #st { padding: 8px; }</style>
+</head>
+<body>
+<div id="st">starting…</div>
+<canvas id="gl" width="512" height="512" style="position:absolute;left:-9999px"></canvas>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+<script type="module">
+// Renders a zone model straight down in the exact frame of the client's minimap (pixel = 512*f1 + f3*X, 512*f2 - f3*Z,
+// game Z = -glb z; the map table's minimap entry at EXE 0x130d740) and blends the minimap over it, to check the
+// transform and read exit positions. ?maps=10200:94004:0.3789:0.6367:0.6388:92935_h-dsimpwyn.glb,... &save=<port>
+// Private analysis output.
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const st = (t) => { document.getElementById('st').textContent = t; };
+const q = new URLSearchParams(location.search);
+const savePort = q.get('save') || '8778';
+const items = q.get('maps').split(',').map((s) => { const [id, png, f1, f2, f3, glb] = s.split(':'); return { id, png, f1: +f1, f2: +f2, f3: +f3, glb }; });
+const gl = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas: gl, antialias: true, preserveDrawingBuffer: true });
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.setSize(512, 512, false);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.6));
+const loader = new GLTFLoader();
+const out = document.createElement('canvas'); out.width = 1024; out.height = 512; document.body.appendChild(out);
+const ctx = out.getContext('2d');
+for (const it of items) {
+  st('rendering ' + it.id);
+  const gltf = await loader.loadAsync('/extracted/zones/' + it.glb);
+  const root = gltf.scene;
+  root.traverse((o) => { if (o.isMesh) { const map = o.material.map || null; if (map) map.colorSpace = THREE.SRGBColorSpace;
+    o.material = new THREE.MeshLambertMaterial({ map, vertexColors: true, side: THREE.DoubleSide }); } });
+  scene.add(root);
+  const b = new THREE.Box3().setFromObject(root);
+  // pixel px -> X = (px - 512 f1) / f3 ; pixel py -> Z = (512 f2 - py) / f3 ; glb z = -Z
+  const L = (0 - 512 * it.f1) / it.f3, R = (512 - 512 * it.f1) / it.f3;
+  const Ztop = (512 * it.f2 - 0) / it.f3, Zbot = (512 * it.f2 - 512) / it.f3;
+  const cam = new THREE.OrthographicCamera(L, R, -(-Ztop), -(-Zbot), 0.1, 20000);
+  // looking down -y with up = -z(glb) = +Z(game): screen top = larger game Z
+  cam.position.set(0, b.max.y + 100, 0); cam.up.set(0, 0, -1); cam.lookAt(0, 0, 0);
+  cam.left = L; cam.right = R; cam.top = Ztop; cam.bottom = Zbot; cam.updateProjectionMatrix();
+  renderer.render(scene, cam);
+  const shot = await createImageBitmap(gl);
+  scene.remove(root);
+  const mm = new Image(); mm.src = '/' + it.png; await mm.decode();
+  ctx.clearRect(0, 0, 1024, 512);
+  ctx.drawImage(shot, 0, 0); ctx.globalAlpha = 0.45; ctx.drawImage(mm, 0, 0); ctx.globalAlpha = 1;
+  ctx.drawImage(shot, 512, 0);
+  ctx.strokeStyle = 'rgba(255,255,0,0.35)'; ctx.beginPath();
+  for (let g = 0; g <= 512; g += 64) { ctx.moveTo(512 + g, 0); ctx.lineTo(512 + g, 512); ctx.moveTo(512, g); ctx.lineTo(1024, g); } ctx.stroke();
+  await fetch(`http://127.0.0.1:${savePort}/save?name=overlay_${it.id}.png`, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: out.toDataURL('image/png') });
+}
+st('done ' + items.length); document.title = 'DONE';
+</script>
+</body>
+</html>

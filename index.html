@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>着せ替え</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; height: 100vh; display: grid; grid-template-columns: 360px 1fr 420px; font: 13px/1.4 system-ui, sans-serif; background: #202327; color: #ddd; }
+  aside { overflow: auto; padding: 10px 12px; border-right: 1px solid #333; box-sizing: border-box; }
+  aside.right { border-right: 0; border-left: 1px solid #333; }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #9aa; margin: 14px 0 6px; }
+  label { display: block; margin: 4px 0; }
+  select, input[type=text], button { background: #2b2f35; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 4px 6px; font: inherit; }
+  select, input[type=text] { width: 100%; box-sizing: border-box; }
+  button { cursor: pointer; }
+  button:hover { border-color: #888; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  .row > * { flex: 1; }
+  .row > button { flex: 0 0 auto; }
+  #slots div { display: flex; justify-content: space-between; gap: 6px; padding: 3px 0; border-bottom: 1px solid #2d3136; }
+  #slots .name { color: #fff; }
+  #slots .empty { color: #777; }
+  #results { max-height: 46vh; overflow: auto; border: 1px solid #333; border-radius: 4px; }
+  #results div { padding: 3px 6px; cursor: pointer; border-bottom: 1px solid #2d3136; }
+  #results div:hover { background: #343a42; }
+  #results .meta { color: #8a9; font-size: 11px; margin-left: 6px; }
+  main { position: relative; }
+  canvas { width: 100%; height: 100%; display: block; }
+  #status { position: absolute; left: 10px; bottom: 8px; color: #bbb; font-size: 12px; pointer-events: none; }
+  #info { font-size: 12px; color: #bbb; white-space: pre-wrap; word-break: break-all; }
+  .fx { color: #f6c; }
+  .icon { display: inline-block; width: 40px; height: 40px; background-size: 256px 256px; background-repeat: no-repeat; vertical-align: middle; margin: -8px 4px -8px 0; zoom: .6; border-radius: 3px; background-color: #111; }
+  .icon.none { background: #2b2f35; }
+  #slots select { width: auto; font-size: 11px; padding: 1px 2px; }
+  a { color: #8cf; }
+  #tabs { display: flex; gap: 4px; margin: 0 0 8px; position: sticky; top: -10px; background: #202327; padding: 6px 0; z-index: 1; }
+  #tabs button { flex: 1; }
+  #tabs button.on { background: #3a4452; border-color: #8ab; color: #fff; }
+  table.st { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  table.st th, table.st td { padding: 2px 4px; border-bottom: 1px solid #2d3136; text-align: right; }
+  table.st th { color: #9aa; font-weight: normal; }
+  table.st td:first-child, table.st th:first-child { text-align: left; }
+  table.st td.fin { color: #fff; font-weight: 600; }
+  .up { color: #7d7; } .down { color: #f77; } .dim { color: #777; } .warn { color: #fb5; }
+  .piece { padding: 4px 0; border-bottom: 1px solid #2d3136; font-size: 12px; }
+  .piece b { color: #fff; font-weight: 600; }
+  .sk { display: grid; grid-template-columns: 1fr 52px 120px; gap: 6px; align-items: center; padding: 1px 0; font-size: 12px; }
+  .sk input[type=number] { width: 52px; box-sizing: border-box; background: #2b2f35; color: #eee; border: 1px solid #444; border-radius: 3px; padding: 1px 3px; font: inherit; }
+  .sk input[type=range] { width: 120px; }
+  .sk.over input[type=number] { border-color: #fb5; }
+  .total { position: sticky; top: 30px; background: #202327; padding: 4px 0; z-index: 1; font-size: 13px; }
+  .list { max-height: 40vh; overflow: auto; border: 1px solid #333; border-radius: 4px; }
+  .list div { padding: 3px 6px; border-bottom: 1px solid #2d3136; font-size: 12px; }
+  .list div[data-id] { cursor: pointer; }
+  .list div[data-id]:hover { background: #343a42; }
+  .tag { color: #8a9; font-size: 11px; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>着せ替え <span style="font-weight:normal;color:#9aa">· <a href="/viewer/map.html">ゾーン</a></span></h1>
+  <h2>キャラクター</h2>
+  <label>種族・性別 <select id="race"></select></label>
+  <div class="row"><label>顔 <select id="face"></select></label><label>髪型 <select id="hair"></select></label></div>
+  <div class="row"><label>髪の色 <input id="hairColor" type="color" value="#f2f2f6"></label></div>
+  <h2>装備</h2>
+  <div id="slots"></div>
+  <div class="row"><button id="starter">初期装備</button><button id="clear">すべて外す</button></div>
+  <h2>アイテム検索</h2>
+  <input id="q" type="text" placeholder="アイテム名…">
+  <div class="row"><select id="filter"><option value="">すべての部位</option></select></div>
+  <div id="results"></div>
+</aside>
+<main>
+  <canvas id="view"></canvas>
+  <div id="status">読み込み中…</div>
+</main>
+<aside class="right">
+  <nav id="tabs"><button data-tab="status" class="on">ステータス</button><button data-tab="skills">スキル</button><button data-tab="buffs">強化</button><button data-tab="anim">モーション</button></nav>
+  <section id="tab-status" class="tab"><div id="sheet">読み込み中…</div></section>
+  <section id="tab-skills" class="tab" hidden><div id="skillsim"></div></section>
+  <section id="tab-buffs" class="tab" hidden><div id="buffs"></div></section>
+  <section id="tab-anim" class="tab" hidden>
+  <h2>モーション</h2>
+  <select id="clip"><option value="">基本姿勢</option></select>
+  <select id="action" title="ゲーム内のアクション表"><option value="">— アクション表 —</option></select>
+  <div class="row"><button id="play">一時停止</button><button id="shot">撮影</button><button id="viewhead" title="顔を映す">顔</button><button id="viewbody" title="全身を映す">全身</button></div>
+  <label>エフェクトの光の強さ <input id="glow" type="range" min="0.1" max="1" step="0.05" value="0.6" style="width:100%"></label>
+  <label><input id="additive" type="checkbox" checked> エフェクト層を加算で描く</label>
+  <h2>表示中のパーツ</h2>
+  <div id="info"></div>
+  </section>
+</aside>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+<script type="module" src="status.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

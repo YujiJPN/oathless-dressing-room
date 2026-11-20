@@ -1,0 +1,74 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NPC placement</title>
+<style>
+  :root { color-scheme: dark; --bg:#14181e; --panel:#1c2129; --line:#2c333d; --text:#e4e8ee; --dim:#8b95a3; --gold:#e8c060; }
+  * { box-sizing: border-box; }
+  body { margin:0; height:100vh; display:grid; grid-template-columns: 300px 1fr 420px; font:13px/1.45 "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  aside, section { overflow:auto; padding:12px; border-right:1px solid var(--line); }
+  h1 { font-size:15px; margin:0 0 10px; color:var(--gold); }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:14px 0 6px; }
+  select, input, textarea, button { background:#232933; color:var(--text); border:1px solid #3a4250; border-radius:5px; padding:5px 7px; font:inherit; }
+  input, textarea, select { width:100%; }
+  button { cursor:pointer; } button:hover { border-color:#7a8596; }
+  button.primary { background:#3a5f8a; border-color:#4f7cb0; }
+  #list div { padding:5px 7px; border-radius:5px; cursor:pointer; display:flex; gap:7px; align-items:center; }
+  #list div:hover { background:#232a34; } #list div.sel { background:#2e3a4a; }
+  .dot { width:10px; height:10px; border-radius:50%; flex:none; border:1px solid #0008; }
+  .muted { color:var(--dim); font-size:12px; }
+  main { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:12px; gap:8px; }
+  #mapwrap { position:relative; width:min(calc(100vh - 120px), 100%); aspect-ratio:1; }
+  #mapwrap img { width:100%; height:100%; display:block; border-radius:6px; user-select:none; -webkit-user-drag:none; }
+  #mapwrap svg { position:absolute; inset:0; width:100%; height:100%; }
+  #bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #legend span { display:inline-flex; align-items:center; gap:4px; margin-right:10px; font-size:12px; color:var(--dim); }
+  #frame { width:100%; border-radius:6px; border:1px solid var(--line); }
+  label { display:block; margin:8px 0 3px; color:var(--dim); font-size:12px; }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
+  #status { font-size:12px; color:var(--dim); }
+</style>
+</head>
+<body>
+<aside>
+  <h1>NPC placement</h1>
+  <label>Map</label>
+  <select id="map"></select>
+  <label>Show role</label>
+  <select id="rolefilter"><option value="">All roles</option></select>
+  <h2>NPCs on this map</h2>
+  <div id="list"></div>
+  <h2>Totals</h2>
+  <div id="totals" class="muted"></div>
+</aside>
+<main>
+  <div id="bar">
+    <button id="add">+ Add NPC (then click the map)</button>
+    <button class="primary" id="save">Save</button>
+    <label style="display:inline;margin:0"><input type="checkbox" id="showpts" checked style="width:auto"> spawn points (blue) / fishing (purple)</label>
+    <span id="status">Drag a dot to move it. Click a dot to edit it.</span>
+  </div>
+  <div id="mapwrap"><img id="sheet" alt="area map"><svg id="svg"></svg></div>
+  <div id="legend"></div>
+</main>
+<section>
+  <h2>Selected NPC</h2>
+  <div id="none" class="muted">Pick an NPC from the list or the map.</div>
+  <div id="edit" hidden>
+    <div class="row"><div><label>Name (Japanese)</label><input id="f_name"></div><div><label>Name (English)</label><input id="f_en"></div></div>
+    <label>Role</label><select id="f_role"></select>
+    <label>Why this role</label><textarea id="f_basis" rows="2"></textarea>
+    <div class="row"><div><label>X (m, east)</label><input id="f_x" type="number" step="0.1"></div><div><label>Z (m, south)</label><input id="f_z" type="number" step="0.1"></div><div><label>Y (m, height; blank = top floor)</label><input id="f_y" type="number" step="0.1"></div><div><label>Facing (deg)</label><input id="f_yaw" type="number" step="15"></div></div>
+    <div id="ptinfo" class="muted"></div>
+    <label>Notes</label><textarea id="f_note" rows="2"></textarea>
+    <div class="row" style="margin-top:10px"><button id="del">Delete NPC</button></div>
+    <h2>Where you met them</h2>
+    <div id="src" class="muted"></div>
+    <img id="frame" alt="">
+  </div>
+</section>
+<script src="npcs.js"></script>
+</body>
+</html>
+

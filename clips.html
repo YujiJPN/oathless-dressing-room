@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>MoE clip sheet</title>
+<style>
+html,body{margin:0;background:#2b2d33;color:#ddd;font:13px system-ui}
+#bar{padding:8px 12px;display:flex;gap:12px;align-items:center;background:#1f2126;position:sticky;top:0}
+#sheets canvas{display:block;margin:8px 12px;background:#3a3d44}
+</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}</script>
+</head><body>
+<div id="bar"><span id="status">…</span></div>
+<div id="sheets"></div>
+<script type="module">
+// Contact sheets of a race's motion set: one row per action id, FR stills spread over the action's frame window
+// (tables/motion-sets.csv: start = "flags", end = "frames"), on the base body in the starter clothes.
+//   clips.html?block=1&ids=1-60,128-170&frames=6&rows=6[&fit=1][&save=http://127.0.0.1:8778/save&name=sheet]
+// fit=1 frames each row's camera on the posed character (many poses are placed metres above or below the origin, on
+// the seat or bed they were made for, and leave the fixed camera's view).
+// With save=, every finished sheet is POSTed as PNG to that endpoint (name-<n>.png); otherwise just look at the page.
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const block = q.get('block') || '1', FR = Number(q.get('frames') || 6), ROWS = Number(q.get('rows') || 6);
+const W = 128, H = 192, LABEL = 150, SAVE = q.get('save'), NAME = q.get('name') || 'sheet';
+const FIT = q.get('fit') === '1';   // frame the camera on the posed character (clips that move the body out of the fixed view)
+function parseIds(s) { const out = []; for (const part of s.split(',')) { const m = /^(\d+)-(\d+)$/.exec(part); if (m) { for (let i = +m[1]; i <= +m[2]; i++) out.push(i); } else if (part) out.push(+part); } return out; }
+const ids = parseIds(q.get('ids') || '1-60');
+const [appearance, racesFile, setsCsv] = await Promise.all([fetch('data/appearance.json').then((r) => r.json()), fetch('data/races.json').then((r) => r.json()), fetch('/tables/motion-sets.csv').then((r) => r.text())]);
+const race = racesFile.races[block], app = appearance[block] || {};
+const actions = new Map((race.actions || []).map((a) => [a.a, a]));
+const windows = new Map();   // action id -> [start, end] frames of the race's motion set
+for (const line of setsCsv.split('\n').slice(1)) { const c = line.split(','); if (Number(c[0]) === race.set) windows.set(Number(c[1]), [Number(c[6]), Number(c[5])]); }
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.outputColorSpace = THREE.SRGBColorSpace;
+const loader = new GLTFLoader(), texLoader = new THREE.TextureLoader();
+const cache = new Map();
+const load = (url) => { if (!cache.has(url)) cache.set(url, fetch(url).then((r) => { if (!r.ok) throw new Error(r.status + ' ' + url); return r.arrayBuffer(); })); return cache.get(url).then((b) => loader.parseAsync(b.slice(0), '')); };
+const tex = (rel) => texLoader.loadAsync('/extracted/sheets/' + rel).then((t) => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = false; return t; });
+const mat = (t, opts = {}) => new THREE.MeshStandardMaterial({ map: t || null, color: t ? 0xffffff : 0xeec7b0, roughness: 0.9, metalness: 0, side: THREE.DoubleSide, alphaTest: 0.5, ...opts });
+function boneMaps(skeleton) { const byName = new Map(skeleton.bones.map((b, i) => [b.name, i])); const byNum = new Map(); skeleton.bones.forEach((b, i) => { const m = /^I(\d\d)/.exec(b.name); if (m && !byNum.has(m[1])) byNum.set(m[1], i); }); return { byName, byNum }; }
+function resolveBone(name, maps) { if (maps.byName.has(name)) return maps.byName.get(name); const m = /^I(\d\d)/.exec(name); return m && maps.byNum.has(m[1]) ? maps.byNum.get(m[1]) : undefined; }
+// the piece follows the master's bones through its OWN inverse bind matrices (see app.js: some pieces are rigged a few cm off the base body's rig)
+function retarget(mesh, skeleton, maps) { const map = mesh.skeleton.bones.map((b) => { const i = resolveBone(b.name, maps); return i === undefined ? 0 : i; }); const inverses = skeleton.bones.map((_, i) => skeleton.boneInverses[i].clone()); mesh.skeleton.bones.forEach((b, k) => { if (resolveBone(b.name, maps) !== undefined) inverses[map[k]] = mesh.skeleton.boneInverses[k].clone(); }); const attr = mesh.geometry.attributes.skinIndex; for (let i = 0; i < attr.array.length; i++) attr.array[i] = map[attr.array[i]]; attr.needsUpdate = true; mesh.bind(new THREE.Skeleton(skeleton.bones, inverses), new THREE.Matrix4()); }
+// the character: base body, face row 0, hair row 8, starter top/gloves/trousers/shoes (rows 20..23)
+const HIDES = { 9: [2, 3, 9], 1: [0, 95, 1], 4: [0, 90, 4] };
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x3a3d44);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.2)); const dl = new THREE.DirectionalLight(0xffffff, 1.2); dl.position.set(1, 2, 3); scene.add(dl);
+const baseG = await load('/extracted/models/' + race.base.g);
+let master = null; baseG.scene.traverse((o) => { if (!master && o.isSkinnedMesh) master = o; });
+const skeleton = master.skeleton, maps = boneMaps(skeleton);
+const worn = [0, 8, 20, 21, 22, 23].map((r) => app[String(r)]).filter(Boolean);
+const covered = new Set(worn.flatMap((e) => HIDES[e.m ?? e.c] || [e.m ?? e.c]));
+const surf = {}; for (const [k, v] of Object.entries(race.base.s)) surf[k] = await tex(v).catch(() => null);
+baseG.scene.traverse((o) => {
+  if (!o.isSkinnedMesh) return;
+  const m = /^slot(\d+)_surface(\d+)/.exec(o.name); const slot = m ? +m[1] : 0; const t = m ? surf[m[2]] : null;
+  if (covered.has(slot)) { o.visible = false; return; }
+  o.material = slot === 90 ? mat(t, { alphaTest: 0, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }) : slot === 1 ? mat(t, { transparent: true, alphaTest: 0 }) : mat(t);
+  o.frustumCulled = false;
+});
+scene.add(baseG.scene);
+for (const e of worn) {
+  const g = await load('/extracted/models/' + e.g); const t = e.t ? await tex(e.t).catch(() => null) : null;
+  const meshes = []; g.scene.traverse((o) => { if (o.isSkinnedMesh) meshes.push(o); });
+  for (const mesh of meshes) { retarget(mesh, skeleton, maps); mesh.material = e.c === 1 ? mat(t, { transparent: true, alphaTest: 0 }) : mat(t, e.c === 7 ? { color: 0xf2f2f6 } : {}); if (e.c === 1) mesh.renderOrder = 1; mesh.frustumCulled = false; mesh.removeFromParent(); scene.add(mesh); }
+}
+const mixer = new THREE.AnimationMixer(baseG.scene);
+const camera = new THREE.PerspectiveCamera(30, W / H, 0.01, 100); camera.position.set(1.0, 0.3, 3.4); camera.lookAt(0, -0.05, 0);
+let fps = 0;
+async function renderRow(ctx, y, id) {
+  const a = actions.get(id);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 15px system-ui'; ctx.fillText(String(id), 6, y + 20);
+  if (!a) { ctx.font = '12px system-ui'; ctx.fillText('no clip', 6, y + 40); return; }
+  const g = await load('/extracted/anims/' + a.g); const clip = g.animations[0];
+  const [start, end] = windows.get(id) || [0, 0];
+  if (!fps && clip && start === 0 && end > 0) fps = Math.round(end / clip.duration);   // the file's frame rate from a whole-file action
+  const tracks = []; for (const t of clip.tracks) { const dot = t.name.lastIndexOf('.'); const i = resolveBone(t.name.slice(0, dot), maps); if (i === undefined) continue; const nt = t.clone(); nt.name = skeleton.bones[i].name + t.name.slice(dot); tracks.push(nt); }
+  mixer.stopAllAction(); mixer.uncacheRoot(baseG.scene);
+  const action = mixer.clipAction(new THREE.AnimationClip(clip.name, clip.duration, tracks)); action.play();
+  const t0 = fps && end > start ? start / fps : 0, t1 = fps && end > start ? Math.min(end / fps, clip.duration) : clip.duration;
+  if (FIT) {
+    // the union of the character's bounds over the row's frames, then a camera that frames it (so a clip that lifts,
+    // sinks or lays the body far from the origin is still seen whole)
+    const box = new THREE.Box3(), tmp = new THREE.Box3();
+    for (let k = 0; k < FR; k++) {
+      mixer.setTime(t0 + (t1 - t0) * k / (FR - 1) * 0.999); scene.updateMatrixWorld(true);
+      scene.traverse((o) => { if (o.isSkinnedMesh && o.visible) { o.skeleton.update(); o.computeBoundingBox(); tmp.copy(o.boundingBox).applyMatrix4(o.matrixWorld); box.union(tmp); } });
+    }
+    const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
+    const r = Math.max(s.x, s.y * 0.7, s.z) * 1.1 + 0.3;
+    camera.position.set(c.x + r * 0.9, c.y + r * 0.35, c.z + r * 2.6); camera.lookAt(c);
+    ctx.font = '11px system-ui'; ctx.fillStyle = '#9ad'; ctx.fillText(`centre y ${c.y.toFixed(2)} z ${c.z.toFixed(2)}`, 6, y + H - 8);
+  } else { camera.position.set(1.0, 0.3, 3.4); camera.lookAt(0, -0.05, 0); }
+  for (let k = 0; k < FR; k++) { mixer.setTime(t0 + (t1 - t0) * k / (FR - 1) * 0.999); renderer.render(scene, camera); ctx.drawImage(renderer.domElement, LABEL + k * W, y); }
+  ctx.font = '12px system-ui'; ctx.fillStyle = '#ddd';
+  ctx.fillText(`${a.f} f${end > start ? ` (${start}–${end})` : ''}`, 6, y + 40);
+  ctx.fillText(`${clip.duration.toFixed(2)} s`, 6, y + 56);
+  const name = a.n || ''; for (let i = 0, ly = y + 76; i < name.length && ly < y + H - 6; i += 11, ly += 16) ctx.fillText(name.slice(i, i + 11), 6, ly);
+}
+let n = 0;
+for (let s = 0; s < ids.length; s += ROWS) {
+  const chunk = ids.slice(s, s + ROWS);
+  const c = document.createElement('canvas'); c.width = LABEL + FR * W; c.height = chunk.length * H; $('sheets').appendChild(c);
+  const ctx = c.getContext('2d'); ctx.fillStyle = '#3a3d44'; ctx.fillRect(0, 0, c.width, c.height);
+  for (let i = 0; i < chunk.length; i++) { $('status').textContent = `rendering ${chunk[i]}…`; await renderRow(ctx, i * H, chunk[i]); ctx.strokeStyle = '#2b2d33'; ctx.strokeRect(0, i * H, c.width, H); }
+  if (SAVE) await fetch(`${SAVE}?name=${encodeURIComponent(`${NAME}-${String(n).padStart(2, '0')}.png`)}`, { method: 'POST', mode: 'no-cors', body: c.toDataURL('image/png') }).catch(() => {});
+  n++;
+}
+$('status').textContent = `done: ${ids.length} actions of set ${race.set} (${race.label}), ${n} sheets, ${fps} fps`;
+window.__done = true;
+</script></body></html>
