@@ -2,6 +2,7 @@
 // (viewer/status-engine.cjs through /api/status): the base pass from the skills and race, the gear pass from the worn
 // items, the buffs and worn-item techniques through the effect-step interpreter. This page only shows them.
 // Shown text is Japanese, names from the game's own tables (stats, skills, races, items, techniques).
+import { OP_JA, stepValue, PARAM_IN_VALUE } from './op-ja.js';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
 const num = (v) => (v == null || !Number.isFinite(+v) ? '—' : (Math.round(+v * 100) / 100).toString());
@@ -11,7 +12,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('dr.' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem('dr.' + k, JSON.stringify(v)); } catch { /* private window */ } },
 };
-const st = { block: '1', worn: [], skills: store.get('skills', {}), buffs: store.get('buffs', []), buffQ: '', buffMine: true, sheet: null };
+const st = { block: '1', worn: [], skills: store.get('skills', {}), buffs: store.get('buffs', []), buffQ: '', buffMine: false, sheet: null };
 
 // the dressing room (app.js) tells the race and the worn items; listened for before the first await so none is missed
 document.addEventListener('outfit', (e) => { st.block = e.detail.block; st.worn = e.detail.worn; refresh(); });
@@ -28,7 +29,25 @@ const statName = (id) => { const s = meta && meta.stats[id]; return s ? s.name_j
 const raceName = (key) => (meta && meta.races[key] ? meta.races[key].name_ja : key);
 // the stat a step names: 0x62 all of stats 0-11 and 21, 0x61 / 97 all resists (opcode notes)
 const stepStat = (op, p) => (p === 0x62 ? '全ステータス' : p === 0x61 || (op === 0x93 && p === 97) ? '全属性耐性' : statName(p));
-const stepText = ([op, p, v]) => `${stepStat(op, p)} ${v > 0 ? '+' : ''}${num(v)}${op === 0x93 ? '%' : ''}`;
+const STAT_OPS = new Set([0x29, 0x93, 0x97]);
+// one effect step in words: the step's Japanese name (op-ja.js), what its param names, its number in its unit, and
+// for a step that runs another technique (chains, procs, auto-revive ...) that technique's own steps in brackets
+function stepText([op, p, v, sub]) {
+  if (STAT_OPS.has(op)) return `${stepStat(op, p)} ${v > 0 ? '+' : ''}${num(v)}${op === 0x93 ? '%' : ''}`;
+  const [name, kind] = OP_JA[op] || [`効果 ${op}`, ''];
+  let target = '';
+  if (kind === 'skill') target = skillName(p);
+  else if (kind === 'tech') target = sub ? sub.name : (meta && meta.names[p]) || (p > 0 ? '#' + p : '');
+  else if (!PARAM_IN_VALUE.has(op) && p && p !== -1) target = (kind === 'element' ? '属性 ' : kind === 'race' ? '種族 ' : '') + p;
+  const val = kind === 'tech' && !sub ? '' : stepValue(op, p, v);
+  let text = `${name}${target ? '（' + esc(target) + '）' : ''}${val ? ' ' + val : ''}`;
+  if (sub) text += ` → [${sub.steps.map(stepText).join('、') || '—'}${durText(sub.dur) ? ' ・ ' + durText(sub.dur) : ''}]`;
+  return text;
+}
+const durText = (d) => (d === -1 ? '常時' : d == null ? '' : d >= 60 ? `効果時間 ${num(d / 60)}分` : `効果時間 ${num(d)}秒`);
+// a technique's details: its steps, how long it lasts and its own description
+const details = (x) => `<div class="tag">${x.steps.map(stepText).join('、') || '—'}${durText(x.dur) ? ' ・ ' + durText(x.dur) : ''}</div>`
+  + (x.desc ? `<div class="desc">${esc(x.desc).replace(/\n/g, '<br>')}</div>` : '');
 const have = (ref) => Number(st.skills[ref]) || 0;
 const needsMet = (need) => need.every(([s, lv]) => have(s) >= lv);
 const GROUP_JA = { Base: '基本', Expertise: '専門', Field: 'フィールド', Life: '生活' };
@@ -81,9 +100,9 @@ function renderSheet() {
     const need = p.need == null ? '' : p.need >= 1 ? '<span class="up">条件を満たしている</span>' : p.need <= 0 ? '<span class="down">条件不足：効果なし</span>' : `<span class="warn">条件 ${Math.round(p.need * 100)}%</span>`;
     h += `<div class="piece"><b>${esc(p.name)}</b> <span class="tag">重さ ${num(p.weight)}</span><br>${lines.join(' ・ ') || '<span class="dim">能力なし</span>'}`
       + `${req.length ? `<br><span class="tag">必要 ${req.join('、')}</span> ${need}` : ''}`
-      + `${p.technique ? `<br><span class="fx">✦ ${esc(p.technique.name)}${p.technique.stats.length ? '：' + p.technique.stats.map(stepText).join('、') : ''}</span>` : ''}</div>`;
+      + `${p.technique ? `<div class="fx">✦ ${esc(p.technique.name)}</div>${details(p.technique)}` : ''}</div>`;
   }
-  if (s.active.length) h += '<h2>効果中</h2>' + s.active.map((a) => `<div class="piece">${esc(a.name)}${a.stats.length ? ' <span class="tag">' + a.stats.map(stepText).join('、') + '</span>' : ''}</div>`).join('');
+  if (s.active.length) h += '<h2>効果中</h2>' + s.active.map((a) => `<div class="piece"><b>${esc(a.name)}</b>${details(a)}</div>`).join('');
   if (s.refused.length) h += '<h2>かからなかった強化</h2>' + s.refused.map((r) => `<div class="piece warn">${r.id}: ${esc(r.why)}</div>`).join('');
   $('sheet').innerHTML = h;
 }
@@ -145,16 +164,17 @@ function renderBuffs() {
   for (const b of meta.buffs) {
     if (on.has(b.id)) continue;
     if (st.buffMine && !needsMet(b.need)) continue;
-    if (q && !(b.n.toLowerCase().includes(q) || b.e.toLowerCase().includes(q) || b.steps.some((x) => stepText(x).toLowerCase().includes(q)))) continue;
-    hits.push(b); if (hits.length >= 200) break;
+    if (q && !(b.n.toLowerCase().includes(q) || b.e.toLowerCase().includes(q) || b.items.some((n) => n.toLowerCase().includes(q)) || b.steps.some((x) => stepText(x).toLowerCase().includes(q)))) continue;
+    hits.push(b);
   }
-  const line = (b) => `${esc(b.n)} <span class="tag">${b.steps.map(stepText).join('、')}${b.need.length ? ' ・ 必要 ' + b.need.map(([s, lv]) => esc(skillName(s)) + ' ' + num(lv)).join('、') : ''}${b.learn ? '' : ' ・ アイテム'}</span>`;
+  const shown = hits.slice(0, 200);
+  const line = (b) => `<b>${esc(b.n)}</b> <span class="tag">${b.need.some(([, lv]) => lv > 0) ? '必要 ' + b.need.filter(([, lv]) => lv > 0).map(([s, lv]) => esc(skillName(s)) + ' ' + num(lv)).join('、') : ''}${b.items.length ? ' ・ アイテム：' + b.items.map(esc).join('、') : ''}</span>${details(b)}`;
   let h = '<h2>かかっている強化</h2>';
   h += st.buffs.length ? '<div class="list">' + st.buffs.map((id) => { const b = meta.buffs.find((x) => x.id === id); return `<div>${b ? line(b) : id} <button data-off="${id}">×</button></div>`; }).join('') + '</div>' : '<div class="dim">なし</div>';
   h += `<div class="row"><button id="buffclear">すべて外す</button></div><h2>強化を追加</h2>`
     + `<input id="buffq" type="text" placeholder="名前またはステータス（例：攻撃力、防御）…" value="${esc(st.buffQ)}">`
     + `<label><input id="buffmine" type="checkbox"${st.buffMine ? ' checked' : ''}> 今のスキルで使えるものだけ</label>`
-    + `<div class="list">${hits.map((b) => `<div data-id="${b.id}">${line(b)}</div>`).join('') || '<div class="dim">該当なし</div>'}</div>`
+    + `<div class="tag">${hits.length} 件${hits.length > shown.length ? `（${shown.length} 件まで表示。検索で絞り込めます）` : ''}</div><div class="list">${shown.map((b) => `<div data-id="${b.id}">${line(b)}</div>`).join('') || '<div class="dim">該当なし</div>'}</div>`
     + '<div class="tag">ゲームの効果処理でサーバーと同じようにかけています。同系統の強化はゲーム同様に上書きされます</div>';
   const focus = document.activeElement && document.activeElement.id === 'buffq';
   $('buffs').innerHTML = h;

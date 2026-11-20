@@ -14,8 +14,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const GAME = 'C:\\Claude Docs\\our-game';
 const ROOT = path.join(__dirname, '..');
+// the game server's code: a shared copy keeps it next to the viewer (our-game/, viewer/pack_share.cjs), else this PC's repo
+const GAME = fs.existsSync(path.join(ROOT, 'our-game', 'rules', 'rules.cjs')) ? path.join(ROOT, 'our-game') : 'C:\\Claude Docs\\our-game';
 const DATA = path.join(ROOT, 'UE', 'ServerData');
 const PROFILE = path.join(ROOT, 'rules-profile', 'reference.cjs');
 
@@ -39,6 +40,7 @@ function load() {
   const gearStatOk = (id) => { const st = statTable[id]; return !st || !!(st.flags & 0x10); };
   // the dressing room lists items by their record index; the server's item map is keyed by item id
   const idOfIndex = new Map(itemsRaw.map((it) => [it.index, it.id]));
+  TECHS = techniques;
   S = { rules, gear, createActiveEffects, techniques, items, itemsRaw, techRaw, opcodes, hand, statTable, gearStatOk, idOfIndex, gameData };
   return S;
 }
@@ -147,12 +149,36 @@ function compute(req) {
 
 function techLabel(L, id) {
   const t = L.techniques.get(id);
-  if (!t) return { id, name: '?' };
-  return { id, name: t.name, name_en: t.name_en || '', stats: statSteps(L, t) };
+  if (!t) return { id, name: '?', steps: [], stats: [] };
+  return { id, name: t.name, name_en: t.name_en || '', desc: descOf(t), dur: durationOf(t), steps: allSteps(t), stats: statSteps(L, t) };
+}
+const stepsOf = (t) => (t.steps || []).slice(0, Math.max(0, t.step_count | 0));
+// every effect step: [op, param, value]
+// steps whose param is a technique id (technique-opcodes.json): the technique they run is expanded under them
+const TECH_PARAM = new Set([22, 79, 86, 133, 136, 165, 224, 241, 261, 286]);
+let TECHS = null;   // the loaded technique map, for the expansion
+function allSteps(t, depth = 0, seen = new Set([t.id])) {
+  return stepsOf(t).map((s) => {
+    const row = [s.op, s.param, s.value];
+    if (TECH_PARAM.has(s.op) && depth < 3 && TECHS && !seen.has(s.param)) {
+      const sub = TECHS.get(s.param);
+      if (sub) row.push({ id: sub.id, name: sub.name, dur: durationOf(sub), steps: allSteps(sub, depth + 1, new Set([...seen, sub.id])) });
+    }
+    return row;
+  });
 }
 // the lasting stat steps of a technique: [op, stat id, value] (value = the step's number; the engine scales it)
-function statSteps(L, t) {
-  return (t.steps || []).slice(0, Math.max(0, t.step_count | 0)).filter((s) => STAT_OPS.has(s.op)).map((s) => [s.op, s.param, s.value]);
+function statSteps(L, t) { return stepsOf(t).filter((s) => STAT_OPS.has(s.op)).map((s) => [s.op, s.param, s.value]); }
+const descOf = (t) => String(t.description || '').replace(/\\n/g, '\n').trim();   // some texts keep a written "\n"
+// how long a slot lasts, seconds (active-effects framesTotal: period 1 -> count frames, period > 1 -> count x period;
+// type 5 masteries and gear effects never run out: -1; period 0 is an amount, not a time: null)
+function durationOf(t) {
+  if ((t.type & 0xffff) === 5) return -1;
+  const d = t.derived || {}, n = (d.effect_count ?? t.effect_count) | 0, per = (d.effect_period_ticks ?? t.effect_period_ticks) | 0;
+  if (n < 1) return null;
+  if (per === 1) return Math.round(n * 0.016 * 10) / 10;
+  if (per > 1) return Math.round(n * per * 0.016 * 10) / 10;
+  return null;
 }
 
 let META = null;
@@ -170,18 +196,29 @@ function meta() {
   // buffs: techniques with a lasting stat step that a player can learn (a learn list names them) and the item
   // techniques (foods, potions); each with its first required skill and level
   const learnable = (t) => t.derived && t.derived.learn_list != null;
-  const buffs = [], techs = [], seen = new Set();
+  // the item each technique comes from (a food, potion, scroll or a worn piece: item class record +technique)
+  const fromItem = new Map();
+  for (const it of L.itemsRaw) {
+    const tid = it.cls && it.cls.technique;
+    if (!tid) continue;
+    if (!fromItem.has(tid)) fromItem.set(tid, []);
+    const l = fromItem.get(tid);
+    if (l.length < 3) l.push(it.name);
+  }
+  const buffs = [], techs = [], seen = new Set(), names = {};
   for (const t of L.techRaw) {
     if (!t.name || t.name.startsWith('*')) continue;
-    const steps = statSteps(L, t);
+    const steps = allSteps(t);
     const need = (t.needs || []).filter((n) => n.skill > 0 && n.level >= 0).map((n) => [n.skill, n.level]);
     const key = t.name + JSON.stringify(need) + JSON.stringify(steps);   // age / event copies of the same technique once
     if (seen.has(key)) continue;
     seen.add(key);
-    if (learnable(t)) techs.push({ id: t.id, n: t.name, e: t.name_en || '', t: t.type, need, cost: t.derived && t.derived.cost || 0, buff: steps.length > 0 });
-    if (steps.length && (learnable(t) || t.type === 1)) buffs.push({ id: t.id, n: t.name, e: t.name_en || '', need, steps, learn: learnable(t) });
+    names[t.id] = t.name;
+    const lasting = durationOf(t) !== null && steps.length > 0;
+    if (learnable(t)) techs.push({ id: t.id, n: t.name, e: t.name_en || '', t: t.type, need, cost: t.derived && t.derived.cost || 0, buff: lasting });
+    if (lasting && (learnable(t) || fromItem.has(t.id) || t.type === 1)) buffs.push({ id: t.id, n: t.name, e: t.name_en || '', need, steps, desc: descOf(t), dur: durationOf(t), learn: learnable(t), items: fromItem.get(t.id) || [] });
   }
-  META = { skills, stats, races, buffs, techs, total: L.rules.C.SKILL_CAP || 850, startCap: L.rules.C.SKILL_LIMIT_BASE || 70 };
+  META = { skills, stats, races, names, buffs, techs, total: L.rules.C.SKILL_CAP || 850, startCap: L.rules.C.SKILL_LIMIT_BASE || 70 };
   return META;
 }
 

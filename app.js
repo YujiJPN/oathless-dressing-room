@@ -252,7 +252,10 @@ async function rebuild() {
   const wearers = wanted.filter((p) => !p.base && !p.held && p.row != null && p.row < 4654 && (p.e.m ?? p.e.c) != null);
   const slotOf = (p) => p.e.m ?? p.e.c, extOf = (p) => ((p.e.c == null || p.e.c <= 14) && HIDES[slotOf(p)]) || [slotOf(p)];
   const hiddenBy = new Map();
-  for (const p of wearers) for (const q of wearers) if (q !== p && slotOf(q) !== slotOf(p) && extOf(q).includes(slotOf(p))) hiddenBy.set(p, q);
+  // the face and hair rows go on first (character creation), worn items after: an item also removes a face / hair row
+  // of its own slot (a wig, slot 7, takes the chosen hairstyle off); two items never share a slot
+  const isLook = (p) => p.kind === 'face' || p.kind === 'hair';
+  for (const p of wearers) for (const q of wearers) if (q !== p && ((slotOf(q) !== slotOf(p) && extOf(q).includes(slotOf(p))) || (isLook(p) && !isLook(q) && slotOf(q) === slotOf(p)))) hiddenBy.set(p, q);
   const list = wanted.filter((p) => !hiddenBy.has(p));
   const covered = new Set(wearers.filter((p) => !hiddenBy.has(p)).flatMap(extOf));
   let loaded;
